@@ -9,10 +9,13 @@ struct AppSettings
     // General
     int  language = 0;                 // 0 English, 1 Español, 2 中文
     bool animations = true, scanlines = true;
-    int  accent = 0;                   // 0 cian, 1 magenta, 2 verde, 3 naranja, 4 violeta
+    int  accent = 0;                   // 0..9 paleta, 10 = color personalizado (accentHue)
+    float accentHue = 0.55f;
+    float settingsOpacity = 0.86f;
 
     // Barra superior
     bool topCollapsed = false, showSubtitle = true;
+    float topScale = 1.f, bottomScale = 1.f, sideScale = 1.f;      // tamaño de cada zona
 
     // Laterales (vúmetros)
     bool sidesCollapsed = false, peakHold = true;
@@ -65,6 +68,8 @@ private:
     void visit (F&& f)
     {
         f ("language", language);  f ("animations", animations);  f ("scanlines", scanlines);  f ("accent", accent);
+        f ("accentHue", accentHue);  f ("settingsOpacity", settingsOpacity);
+        f ("topScale", topScale);  f ("bottomScale", bottomScale);  f ("sideScale", sideScale);
         f ("topCollapsed", topCollapsed);  f ("showSubtitle", showSubtitle);
         f ("sidesCollapsed", sidesCollapsed);  f ("peakHold", peakHold);  f ("meterRange", meterRange);  f ("meterFall", meterFall);
         f ("bottomCollapsed", bottomCollapsed);  f ("showCaptions", showCaptions);  f ("panelOpacity", panelOpacity);
@@ -85,7 +90,12 @@ private:
             else                                         v = (float) xml.getDoubleAttribute (name);
         });
         language = juce::jlimit (0, 2, language);
-        accent = juce::jlimit (0, 4, accent);
+        accent = juce::jlimit (0, 10, accent);
+        accentHue = juce::jlimit (0.f, 1.f, accentHue);
+        settingsOpacity = juce::jlimit (0.4f, 1.f, settingsOpacity);
+        topScale = juce::jlimit (0.6f, 1.3f, topScale);
+        bottomScale = juce::jlimit (0.6f, 1.3f, bottomScale);
+        sideScale = juce::jlimit (0.6f, 1.3f, sideScale);
         meterFall = juce::jlimit (0, 2, meterFall);
         spectrumSmoothing = juce::jlimit (0, 2, spectrumSmoothing);
         analyzerRes = juce::jlimit (0, 2, analyzerRes);

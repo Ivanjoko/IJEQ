@@ -46,7 +46,7 @@ void StereoMeter::paint (juce::Graphics& g)
 
     auto b = getLocalBounds().toFloat().reduced (2.f);
     auto frame = Cyber::chamfer (b, 8.f);
-    g.setGradientFill (juce::ColourGradient (juce::Colour (0xff1b1230), 0.f, b.getY(), juce::Colour (0xff0a0614), 0.f, b.getBottom(), false));
+    g.setGradientFill (juce::ColourGradient (Cyber::tint (0.19f, 0.5f), 0.f, b.getY(), Cyber::tint (0.07f, 0.55f), 0.f, b.getBottom(), false));
     g.fillPath (frame);
     g.setColour (Cyber::text.withAlpha (0.08f));
     g.drawLine (b.getX() + 8.f, b.getY() + 1.5f, b.getRight() - 2.f, b.getY() + 1.5f, 1.f);
@@ -108,13 +108,11 @@ InfoOverlay::InfoOverlay()
     text.setReadOnly (true);
     text.setCaretVisible (false);
     text.setScrollbarsShown (true);
-    text.setColour (juce::TextEditor::backgroundColourId, juce::Colour (0xff0a0614));
-    text.setColour (juce::TextEditor::textColourId, Cyber::text);
     text.setColour (juce::TextEditor::outlineColourId, juce::Colours::transparentBlack);
     text.setColour (juce::TextEditor::focusedOutlineColourId, juce::Colours::transparentBlack);
     addAndMakeVisible (text);
 
-    closeBtn.setNeon (Cyber::magenta);
+    closeBtn.setRole (CyberButton::Role::Secondary);
     closeBtn.onClick = [this] { if (onClose) onClose(); };
     addAndMakeVisible (closeBtn);
     refresh();
@@ -122,6 +120,8 @@ InfoOverlay::InfoOverlay()
 
 void InfoOverlay::refresh()
 {
+    text.setColour (juce::TextEditor::backgroundColourId, Cyber::tint (0.07f, 0.55f));
+    text.setColour (juce::TextEditor::textColourId, Cyber::text);
     text.setFont (juce::Font (Cyber::font (15.f)));
     text.setText (Loc::infoText());
     closeBtn.setButtonText (tr ("CLOSE"));
@@ -148,8 +148,256 @@ void InfoOverlay::resized()
 }
 
 //==============================================================================
-//  SettingsOverlay
+//  Ajustes: filas de controles (se crean una sola vez y no se destruyen al cambiar de pestaña)
 //==============================================================================
+class SettingRow : public juce::Component
+{
+public:
+    SettingRow (int tabIndex, const char* labelKey) : tab (tabIndex), key (labelKey)
+    {
+        label.setJustificationType (juce::Justification::centredLeft);
+        addAndMakeVisible (label);
+    }
+
+    virtual void refreshTexts()
+    {
+        label.setText (tr (key), juce::dontSendNotification);
+        label.setFont (juce::Font (Cyber::font (14.f)));
+        label.setColour (juce::Label::textColourId, Cyber::text);
+    }
+    virtual void syncValue() {}
+
+    void resized() override
+    {
+        auto r = getLocalBounds().reduced (2, 3);
+        label.setBounds (r.removeFromLeft (r.getWidth() * 38 / 100));
+        layoutControl (r.reduced (6, 0));
+    }
+
+    void paint (juce::Graphics& g) override
+    {
+        g.setColour (Cyber::cyan.withAlpha (0.10f));
+        g.drawHorizontalLine (getHeight() - 1, 0.f, (float) getWidth());
+    }
+
+    int tab;
+
+protected:
+    virtual void layoutControl (juce::Rectangle<int>) = 0;
+
+    const char* key;
+    juce::Label label;
+};
+
+//----------------------------------------------------------------------------
+class ToggleRow : public SettingRow
+{
+public:
+    ToggleRow (int tabIndex, const char* labelKey, bool& ref, std::function<void()> changed)
+        : SettingRow (tabIndex, labelKey), value (&ref), onChanged (std::move (changed))
+    {
+        btn.setClickingTogglesState (true);
+        btn.setSmall (true);
+        btn.onClick = [this]
+        {
+            *value = btn.getToggleState();
+            refreshTexts();
+            onChanged();
+        };
+        addAndMakeVisible (btn);
+        syncValue();
+        refreshTexts();
+    }
+
+    void refreshTexts() override
+    {
+        SettingRow::refreshTexts();
+        btn.setButtonText (tr (*value ? "ON" : "OFF"));
+    }
+    void syncValue() override { btn.setToggleState (*value, juce::dontSendNotification); }
+
+protected:
+    void layoutControl (juce::Rectangle<int> r) override { btn.setBounds (r.removeFromLeft (84)); }
+
+private:
+    bool* value;
+    std::function<void()> onChanged;
+    CyberButton btn;
+};
+
+//----------------------------------------------------------------------------
+class ChoiceRow : public SettingRow
+{
+public:
+    struct Item { const char* key; bool translate; int value; };
+
+    ChoiceRow (int tabIndex, const char* labelKey, std::vector<Item> itemList, int& ref,
+               std::function<void()> changed, std::function<void()> afterChange = {})
+        : SettingRow (tabIndex, labelKey), items (std::move (itemList)), value (&ref),
+          onChanged (std::move (changed)), onAfter (std::move (afterChange))
+    {
+        for (size_t i = 0; i < items.size(); ++i)
+        {
+            auto b = std::make_unique<CyberButton>();
+            b->setClickingTogglesState (true);
+            b->setRadioGroupId (301);
+            b->setSmall (true);
+            const int v = items[i].value;
+            b->onClick = [this, v]
+            {
+                *value = v;
+                syncValue();
+                onChanged();
+                if (onAfter) onAfter();
+            };
+            addAndMakeVisible (*b);
+            buttons.push_back (std::move (b));
+        }
+        syncValue();
+        refreshTexts();
+    }
+
+    void refreshTexts() override
+    {
+        SettingRow::refreshTexts();
+        for (size_t i = 0; i < items.size(); ++i)
+            buttons[i]->setButtonText (items[i].translate ? tr (items[i].key) : juce::String::fromUTF8 (items[i].key));
+    }
+
+    void syncValue() override
+    {
+        for (size_t i = 0; i < items.size(); ++i)
+            buttons[i]->setToggleState (items[i].value == *value, juce::dontSendNotification);
+    }
+
+protected:
+    void layoutControl (juce::Rectangle<int> r) override
+    {
+        const int n = juce::jmax (1, (int) buttons.size());
+        const int w = r.getWidth() / n;
+        for (auto& b : buttons)
+            b->setBounds (r.removeFromLeft (w).reduced (1, 0));
+    }
+
+private:
+    std::vector<Item> items;
+    int* value;
+    std::function<void()> onChanged, onAfter;
+    std::vector<std::unique_ptr<CyberButton>> buttons;
+};
+
+//----------------------------------------------------------------------------
+class SliderRow : public SettingRow
+{
+public:
+    SliderRow (int tabIndex, const char* labelKey, double lo, double hi, double step, float& ref, std::function<void()> changed)
+        : SettingRow (tabIndex, labelKey), value (&ref), onChanged (std::move (changed))
+    {
+        s.setSliderStyle (juce::Slider::LinearHorizontal);
+        s.setTextBoxStyle (juce::Slider::TextBoxRight, false, 50, 20);
+        s.setRange (lo, hi, step);
+        s.setScrollWheelEnabled (false);                       // la rueda desplaza la lista, no los controles
+        s.getProperties().set ("primary", true);
+        s.setValue ((double) ref, juce::dontSendNotification);
+        s.onValueChange = [this] { *value = (float) s.getValue(); onChanged(); };
+        addAndMakeVisible (s);
+        refreshTexts();
+    }
+
+    void syncValue() override { s.setValue ((double) *value, juce::dontSendNotification); }
+
+protected:
+    void layoutControl (juce::Rectangle<int> r) override { s.setBounds (r); }
+
+private:
+    float* value;
+    std::function<void()> onChanged;
+    juce::Slider s;
+};
+
+//----------------------------------------------------------------------------
+class SwatchRow : public SettingRow
+{
+public:
+    SwatchRow (int tabIndex, const char* labelKey, std::function<void()> changed)
+        : SettingRow (tabIndex, labelKey), onChanged (std::move (changed))
+    {
+        refreshTexts();
+        setMouseCursor (juce::MouseCursor::PointingHandCursor);
+    }
+
+    void paint (juce::Graphics& g) override
+    {
+        SettingRow::paint (g);
+        const auto& st = AppSettings::get();
+        const float d = swatchSize();
+
+        for (int i = 0; i < 11; ++i)
+        {
+            const auto c = Cyber::accentColour (i, st.accentHue);
+            const auto rc = juce::Rectangle<float> (d, d).withPosition ((float) area.getX() + (float) i * (d + 4.f),
+                                                                       (float) area.getCentreY() - d * 0.5f);
+            const bool selected = (st.accent == i);
+
+            if (selected)
+            {
+                g.setColour (c.withAlpha (0.35f));
+                g.fillEllipse (rc.expanded (4.f));
+            }
+
+            if (i == 10)      // color personalizado: arcoíris
+            {
+                juce::ColourGradient grad (juce::Colour::fromHSV (0.f, 0.85f, 1.f, 1.f), rc.getX(), rc.getCentreY(),
+                                           juce::Colour::fromHSV (0.85f, 0.85f, 1.f, 1.f), rc.getRight(), rc.getCentreY(), false);
+                grad.addColour (0.25, juce::Colour::fromHSV (0.15f, 0.85f, 1.f, 1.f));
+                grad.addColour (0.50, juce::Colour::fromHSV (0.35f, 0.85f, 1.f, 1.f));
+                grad.addColour (0.75, juce::Colour::fromHSV (0.58f, 0.85f, 1.f, 1.f));
+                g.setGradientFill (grad);
+            }
+            else
+            {
+                g.setColour (c);
+            }
+            g.fillEllipse (rc);
+
+            g.setColour (selected ? Cyber::text : Cyber::text.withAlpha (0.25f));
+            g.drawEllipse (rc.expanded (selected ? 3.f : 0.f), selected ? 1.8f : 1.f);
+        }
+    }
+
+    void mouseDown (const juce::MouseEvent& e) override
+    {
+        const float d = swatchSize();
+        const int i = (int) std::floor ((e.position.x - (float) area.getX()) / (d + 4.f));
+        if (i >= 0 && i < 11)
+        {
+            AppSettings::get().accent = i;
+            repaint();
+            onChanged();
+        }
+    }
+
+protected:
+    void layoutControl (juce::Rectangle<int> r) override { area = r; }
+
+private:
+    float swatchSize() const { return juce::jlimit (12.f, 22.f, juce::jmin ((float) area.getHeight() - 4.f, (float) area.getWidth() / 11.f - 4.f)); }
+
+    juce::Rectangle<int> area;
+    std::function<void()> onChanged;
+};
+
+//==============================================================================
+template <typename T, typename... Args>
+T* SettingsOverlay::addRow (Args&&... args)
+{
+    auto row = std::make_unique<T> (std::forward<Args> (args)...);
+    T* raw = row.get();
+    page.addAndMakeVisible (*row);
+    rows.push_back (std::move (row));
+    return raw;
+}
+
 SettingsOverlay::SettingsOverlay()
 {
     static const char* tabKeys[5] = { "General", "Top bar", "Sides", "Bottom", "Center" };
@@ -157,38 +405,90 @@ SettingsOverlay::SettingsOverlay()
     {
         tabBtn[i].setClickingTogglesState (true);
         tabBtn[i].setRadioGroupId (201);
-        tabBtn[i].setNeon (Cyber::cyan);
-        tabBtn[i].onClick = [this, i] { buildTab (i); };
+        tabBtn[i].setSmall (true);
+        tabBtn[i].onClick = [this, i] { showTab (i); };
         addAndMakeVisible (tabBtn[i]);
-        tabBtn[i].setButtonText (tr (tabKeys[i]));
     }
 
-    closeBtn.setNeon (Cyber::magenta);
+    closeBtn.setRole (CyberButton::Role::Secondary);
+    closeBtn.setSmall (true);
     closeBtn.onClick = [this] { if (onClose) onClose(); };
     addAndMakeVisible (closeBtn);
 
-    resetBtn.setNeon (Cyber::orange);
+    resetBtn.setRole (CyberButton::Role::Secondary);
+    resetBtn.setSmall (true);
     resetBtn.onClick = [this]
     {
         AppSettings::get().reset();
         changed();
-        refreshTexts();
+        refreshAll();
     };
     addAndMakeVisible (resetBtn);
 
-    refreshTexts();
+    viewport.setViewedComponent (&page, false);
+    viewport.setScrollBarsShown (true, false);
+    viewport.setScrollBarThickness (8);
+    addAndMakeVisible (viewport);
+
+    auto& st = AppSettings::get();
+    auto ch = [this] { changed(); };
+
+    // ---- 0 · General
+    addRow<ChoiceRow> (0, "Language",
+                       std::vector<ChoiceRow::Item> { { "English", false, 0 }, { "Español", false, 1 }, { "中文", false, 2 } },
+                       st.language, ch, [this] { refreshAll(); });
+    auto* swatches = addRow<SwatchRow> (0, "Accent colour", ch);
+    addRow<SliderRow> (0, "Custom colour", 0.0, 1.0, 0.005, st.accentHue,
+                       [this, swatches] { AppSettings::get().accent = 10; swatches->repaint(); changed(); });
+    addRow<ToggleRow> (0, "Animations", st.animations, ch);
+    addRow<ToggleRow> (0, "Scanlines effect", st.scanlines, ch);
+    addRow<SliderRow> (0, "Settings opacity", 0.4, 1.0, 0.01, st.settingsOpacity, [this] { changed(); repaint(); });
+
+    // ---- 1 · Barra superior
+    addRow<SliderRow> (1, "Size", 0.6, 1.3, 0.01, st.topScale, ch);
+    addRow<ToggleRow> (1, "Start collapsed", st.topCollapsed, ch);
+    addRow<ToggleRow> (1, "Show subtitle", st.showSubtitle, ch);
+
+    // ---- 2 · Laterales
+    addRow<SliderRow> (2, "Size", 0.6, 1.3, 0.01, st.sideScale, ch);
+    addRow<ToggleRow> (2, "Start collapsed", st.sidesCollapsed, ch);
+    addRow<ChoiceRow> (2, "Meter range",
+                       std::vector<ChoiceRow::Item> { { "-90", false, 90 }, { "-72", false, 72 }, { "-60", false, 60 },
+                                                      { "-48", false, 48 }, { "-36", false, 36 } },
+                       st.meterRange, ch);
+    addRow<ToggleRow> (2, "Peak hold", st.peakHold, ch);
+    addRow<ChoiceRow> (2, "Meter fall speed",
+                       std::vector<ChoiceRow::Item> { { "Slow", true, 0 }, { "Normal", true, 1 }, { "Fast", true, 2 } },
+                       st.meterFall, ch);
+
+    // ---- 3 · Inferior
+    addRow<SliderRow> (3, "Size", 0.6, 1.3, 0.01, st.bottomScale, ch);
+    addRow<ToggleRow> (3, "Start collapsed", st.bottomCollapsed, ch);
+    addRow<SliderRow> (3, "Panel opacity", 0.3, 1.0, 0.01, st.panelOpacity, ch);
+    addRow<ToggleRow> (3, "Show captions", st.showCaptions, ch);
+
+    // ---- 4 · Centro
+    addRow<SliderRow> (4, "Band size", 0.6, 1.8, 0.01, st.nodeSize, ch);
+    addRow<SliderRow> (4, "Band opacity", 0.3, 1.0, 0.01, st.nodeOpacity, ch);
+    addRow<SliderRow> (4, "Curve thickness", 1.0, 4.0, 0.1, st.curveWidth, ch);
+    addRow<SliderRow> (4, "Spectrum opacity", 0.0, 1.0, 0.01, st.spectrumOpacity, ch);
+    addRow<ChoiceRow> (4, "Spectrum smoothing",
+                       std::vector<ChoiceRow::Item> { { "Fast", true, 0 }, { "Normal", true, 1 }, { "Smooth", true, 2 } },
+                       st.spectrumSmoothing, ch);
+    addRow<ChoiceRow> (4, "Analyzer resolution",
+                       std::vector<ChoiceRow::Item> { { "Low", true, 0 }, { "Medium", true, 1 }, { "High", true, 2 } },
+                       st.analyzerRes, ch);
+    addRow<SliderRow> (4, "Grid opacity", 0.0, 1.5, 0.01, st.gridOpacity, ch);
+    addRow<ToggleRow> (4, "Show cursor readout", st.cursorReadout, ch);
+    addRow<ToggleRow> (4, "Show band numbers", st.showNumbers, ch);
+    addRow<ToggleRow> (4, "Fill selected band", st.fillSelected, ch);
+    addRow<ToggleRow> (4, "Invert swipe direction (Q)", st.invertSwipe, ch);
+
+    refreshAll();
+    showTab (0);
 }
 
-void SettingsOverlay::refreshTexts()
-{
-    static const char* tabKeys[5] = { "General", "Top bar", "Sides", "Bottom", "Center" };
-    for (int i = 0; i < 5; ++i)
-        tabBtn[i].setButtonText (tr (tabKeys[i]));
-    closeBtn.setButtonText (tr ("CLOSE"));
-    resetBtn.setButtonText (tr ("RESET"));
-    buildTab (tab);
-    repaint();
-}
+SettingsOverlay::~SettingsOverlay() = default;
 
 void SettingsOverlay::changed()
 {
@@ -196,163 +496,79 @@ void SettingsOverlay::changed()
     if (onChanged) onChanged();
 }
 
-void SettingsOverlay::buildTab (int t)
+void SettingsOverlay::showTab (int t)
 {
     tab = t;
     for (int i = 0; i < 5; ++i)
         tabBtn[i].setToggleState (i == t, juce::dontSendNotification);
+    viewport.setViewPosition (0, 0);
+    layoutRows();
+    repaint();
+}
 
-    labels.clear();
-    controls.clear();
-    auto& st = AppSettings::get();
+void SettingsOverlay::refreshAll()
+{
+    static const char* tabKeys[5] = { "General", "Top bar", "Sides", "Bottom", "Center" };
+    for (int i = 0; i < 5; ++i)
+        tabBtn[i].setButtonText (tr (tabKeys[i]));
+    closeBtn.setButtonText (tr ("CLOSE"));
+    resetBtn.setButtonText (tr ("RESET"));
 
-    auto addLabel = [this] (const char* key)
+    for (auto& row : rows)
     {
-        auto* l = labels.add (new juce::Label());
-        l->setText (tr (key), juce::dontSendNotification);
-        l->setFont (juce::Font (Cyber::font (14.f)));
-        l->setColour (juce::Label::textColourId, Cyber::text);
-        l->setJustificationType (juce::Justification::centredLeft);
-        addAndMakeVisible (l);
-    };
-
-    auto addToggle = [&] (const char* key, bool& ref)
-    {
-        addLabel (key);
-        auto* b = new CyberButton();
-        controls.add (b);
-        b->setClickingTogglesState (true);
-        b->setNeon (Cyber::green);
-        b->setToggleState (ref, juce::dontSendNotification);
-        b->setButtonText (tr (ref ? "ON" : "OFF"));
-        bool* p = &ref;
-        b->onClick = [this, b, p] { *p = b->getToggleState(); b->setButtonText (tr (*p ? "ON" : "OFF")); changed(); };
-        addAndMakeVisible (b);
-    };
-
-    // lista de opciones: el valor guardado es values[índice]
-    auto addChoice = [&] (const char* key, std::vector<juce::String> items, std::vector<int> values, int& ref, bool relabel)
-    {
-        addLabel (key);
-        auto* c = new juce::ComboBox();
-        controls.add (c);
-        int sel = 0;
-        for (size_t i = 0; i < items.size(); ++i)
-        {
-            c->addItem (items[i], (int) i + 1);
-            if (values[i] == ref) sel = (int) i;
-        }
-        c->setSelectedId (sel + 1, juce::dontSendNotification);
-        int* p = &ref;
-        c->onChange = [this, c, p, values, relabel]
-        {
-            *p = values[(size_t) juce::jlimit (0, (int) values.size() - 1, c->getSelectedId() - 1)];
-            changed();
-            if (relabel)
-            {
-                juce::Component::SafePointer<SettingsOverlay> self (this);
-                juce::MessageManager::callAsync ([self] { if (self != nullptr) self->refreshTexts(); });
-            }
-        };
-        addAndMakeVisible (c);
-    };
-
-    auto addSlider = [&] (const char* key, double lo, double hi, double step, float& ref)
-    {
-        addLabel (key);
-        auto* s = new juce::Slider();
-        controls.add (s);
-        s->setSliderStyle (juce::Slider::LinearHorizontal);
-        s->setTextBoxStyle (juce::Slider::TextBoxRight, false, 52, 20);
-        s->setRange (lo, hi, step);
-        s->setValue ((double) ref, juce::dontSendNotification);
-        s->setColour (juce::Slider::trackColourId, Cyber::accent());
-        float* p = &ref;
-        s->onValueChange = [this, s, p] { *p = (float) s->getValue(); changed(); };
-        addAndMakeVisible (s);
-    };
-
-    auto pct = [] (const char* a, const char* b, const char* c) { return std::vector<juce::String> { tr (a), tr (b), tr (c) }; };
-
-    switch (t)
-    {
-        case 0:
-            addChoice ("Language", { "English", juce::String::fromUTF8 ("Español"), juce::String::fromUTF8 ("中文") }, { 0, 1, 2 }, st.language, true);
-            addChoice ("Accent colour", { tr ("Cyan"), tr ("Magenta"), tr ("Green"), tr ("Orange"), tr ("Violet") }, { 0, 1, 2, 3, 4 }, st.accent, false);
-            addToggle ("Animations", st.animations);
-            addToggle ("Scanlines effect", st.scanlines);
-            break;
-
-        case 1:
-            addToggle ("Start collapsed", st.topCollapsed);
-            addToggle ("Show subtitle", st.showSubtitle);
-            break;
-
-        case 2:
-            addToggle ("Start collapsed", st.sidesCollapsed);
-            addChoice ("Meter range", { "-90 dB", "-72 dB", "-60 dB", "-48 dB", "-36 dB" }, { 90, 72, 60, 48, 36 }, st.meterRange, false);
-            addToggle ("Peak hold", st.peakHold);
-            addChoice ("Meter fall speed", pct ("Slow", "Normal", "Fast"), { 0, 1, 2 }, st.meterFall, false);
-            break;
-
-        case 3:
-            addToggle ("Start collapsed", st.bottomCollapsed);
-            addSlider ("Panel opacity", 0.3, 1.0, 0.01, st.panelOpacity);
-            addToggle ("Show captions", st.showCaptions);
-            break;
-
-        default:
-            addSlider ("Band size", 0.6, 1.8, 0.01, st.nodeSize);
-            addSlider ("Band opacity", 0.3, 1.0, 0.01, st.nodeOpacity);
-            addSlider ("Curve thickness", 1.0, 4.0, 0.1, st.curveWidth);
-            addSlider ("Spectrum opacity", 0.0, 1.0, 0.01, st.spectrumOpacity);
-            addChoice ("Spectrum smoothing", pct ("Fast", "Normal", "Smooth"), { 0, 1, 2 }, st.spectrumSmoothing, false);
-            addChoice ("Analyzer resolution", pct ("Low", "Medium", "High"), { 0, 1, 2 }, st.analyzerRes, false);
-            addSlider ("Grid opacity", 0.0, 1.5, 0.01, st.gridOpacity);
-            addToggle ("Show cursor readout", st.cursorReadout);
-            addToggle ("Show band numbers", st.showNumbers);
-            addToggle ("Fill selected band", st.fillSelected);
-            addToggle ("Invert swipe direction (Q)", st.invertSwipe);
-            break;
+        row->syncValue();
+        row->refreshTexts();
     }
-    resized();
+    repaint();
+}
+
+void SettingsOverlay::layoutRows()
+{
+    const int rowH = 36;
+    const int w = juce::jmax (100, viewport.getMaximumVisibleWidth());
+    int y = 0;
+    for (auto& row : rows)
+    {
+        const bool shown = (row->tab == tab);
+        row->setVisible (shown);
+        if (shown)
+        {
+            row->setBounds (0, y, w, rowH);
+            y += rowH;
+        }
+    }
+    page.setSize (w, juce::jmax (y, viewport.getHeight()));
 }
 
 void SettingsOverlay::paint (juce::Graphics& g)
 {
-    g.fillAll (juce::Colours::black.withAlpha (0.6f));
+    const auto& st = AppSettings::get();
+
+    g.beginTransparencyLayer (st.settingsOpacity);           // el panel es algo transparente
     Cyber::drawBevelPanel (g, getLocalBounds().toFloat().reduced (6.f), Cyber::cyan, 16.f);
+    g.endTransparencyLayer();
 
     g.setColour (Cyber::magenta);
-    g.setFont (Cyber::font (20.f, true));
-    g.drawText ("// " + tr ("SETTINGS"), getLocalBounds().reduced (26, 14).removeFromTop (34), juce::Justification::centredLeft);
+    g.setFont (Cyber::font (18.f, true));
+    g.drawText ("// " + tr ("SETTINGS"), getLocalBounds().reduced (24, 12).removeFromTop (30), juce::Justification::centredLeft);
 }
 
 void SettingsOverlay::resized()
 {
-    auto r = getLocalBounds().reduced (26, 16);
-    auto head = r.removeFromTop (38);
-    closeBtn.setBounds (head.removeFromRight (110).reduced (0, 2));  head.removeFromRight (8);
-    resetBtn.setBounds (head.removeFromRight (120).reduced (0, 2));
+    auto r = getLocalBounds().reduced (22, 14);
+    auto head = r.removeFromTop (34);
+    closeBtn.setBounds (head.removeFromRight (96).reduced (0, 2));  head.removeFromRight (6);
+    resetBtn.setBounds (head.removeFromRight (110).reduced (0, 2));
 
     r.removeFromTop (6);
-    auto tabs = r.removeFromTop (34);
-    const int tw = juce::jmin (150, tabs.getWidth() / 5);
+    auto tabs = r.removeFromTop (30);
+    const int tw = tabs.getWidth() / 5;
     for (int i = 0; i < 5; ++i)
-        tabBtn[i].setBounds (tabs.removeFromLeft (tw).reduced (3, 0));
+        tabBtn[i].setBounds (tabs.removeFromLeft (tw).reduced (2, 0));
 
-    r.removeFromTop (14);
-    const int n = labels.size(), rowH = 40;
-    const int cols = (n * rowH > r.getHeight()) ? 2 : 1;
-    const int perCol = juce::jmax (1, (n + cols - 1) / cols);
-    const int colW = r.getWidth() / cols;
-
-    for (int i = 0; i < n; ++i)
-    {
-        juce::Rectangle<int> row (r.getX() + (i / perCol) * colW, r.getY() + (i % perCol) * rowH, colW - 24, rowH - 6);
-        labels[i]->setBounds (row.removeFromLeft (row.getWidth() * 55 / 100));
-        controls[i]->setBounds (row.reduced (4, 2));
-    }
+    r.removeFromTop (8);
+    viewport.setBounds (r);
+    layoutRows();
 }
 
 //==============================================================================
@@ -904,13 +1120,14 @@ void EqGraph::resized()
     curveDirty = specDirty = true;
 }
 
-void EqGraph::ensureGrid()
+void EqGraph::ensureGrid (float ps)
 {
     const int w = getWidth(), h = getHeight();
     if (w <= 0 || h <= 0)
         return;
 
-    if (gridImg.isValid() && gridImg.getWidth() == w && gridImg.getHeight() == h
+    const int pw = juce::jmax (1, (int) std::ceil ((float) w * ps)), ph = juce::jmax (1, (int) std::ceil ((float) h * ps));
+    if (gridImg.isValid() && gridImg.getWidth() == pw && gridImg.getHeight() == ph && std::abs (gridScale - ps) < 0.01f
         && gridView.lo == cur.lo && gridView.hi == cur.hi && gridView.center == cur.center && gridView.half == cur.half)
         return;
 
@@ -919,14 +1136,16 @@ void EqGraph::ensureGrid()
     const auto acc = Cyber::accent();
 
     gridView = cur;
-    gridImg = juce::Image (juce::Image::RGB, w, h, false);
+    gridScale = ps;
+    gridImg = juce::Image (juce::Image::RGB, pw, ph, false);
     juce::Graphics g (gridImg);
+    g.addTransform (juce::AffineTransform::scale ((float) pw / (float) w, (float) ph / (float) h));
 
     g.fillAll (Cyber::bg);
     auto area = juce::Rectangle<float> (0.f, 0.f, (float) w, (float) h).reduced (2.f);
     auto frame = Cyber::chamfer (area, 12.f);
-    g.setGradientFill (juce::ColourGradient (juce::Colour (0xff170e2a), 0.f, area.getY(),
-                                             juce::Colour (0xff07040e), 0.f, area.getBottom(), false));
+    g.setGradientFill (juce::ColourGradient (Cyber::tint (0.16f, 0.55f), 0.f, area.getY(),
+                                             Cyber::tint (0.045f, 0.6f), 0.f, area.getBottom(), false));
     g.fillPath (frame);
 
     // sombra interior (relieve hundido)
@@ -950,7 +1169,7 @@ void EqGraph::ensureGrid()
     {
         const float v = (float) (k * step);
         const float y = gainToY (v);
-        g.setColour (std::abs (v) < 1e-6f ? acc.withAlpha (juce::jmin (1.f, 0.5f * go)) : Cyber::violet.withAlpha (juce::jmin (1.f, 0.16f * go)));
+        g.setColour (std::abs (v) < 1e-6f ? acc.withAlpha (juce::jmin (1.f, 0.5f * go)) : acc.withAlpha (juce::jmin (1.f, 0.14f * go)));
         g.drawHorizontalLine ((int) y, pl.getX(), pl.getRight());
         g.setColour (Cyber::textDim);
         g.drawText ((v > 0.f ? "+" : "") + juce::String (v, step < 1.0 ? 1 : 0), 0, (int) y - 7, 36, 14, juce::Justification::centredRight);
@@ -992,7 +1211,7 @@ void EqGraph::ensureGrid()
 
             if (pass == 0)
             {
-                g.setColour (Cyber::violet.withAlpha (juce::jmin (1.f, (major ? 0.22f : 0.09f) * go)));
+                g.setColour (acc.withAlpha (juce::jmin (1.f, (major ? 0.20f : 0.08f) * go)));
                 g.drawVerticalLine ((int) x, pl.getY(), pl.getBottom());
                 if (major) tryLabel (f, x);
             }
@@ -1076,9 +1295,9 @@ void EqGraph::paint (juce::Graphics& g)
     const auto& st = AppSettings::get();
     const auto acc = Cyber::accent();
 
-    ensureGrid();
+    ensureGrid (Cyber::pixelScale (g));
     if (gridImg.isValid())
-        g.drawImageAt (gridImg, 0, 0);
+        g.drawImage (gridImg, 0, 0, getWidth(), getHeight(), 0, 0, gridImg.getWidth(), gridImg.getHeight());
     else
         g.fillAll (Cyber::bg);
 
@@ -1549,56 +1768,74 @@ void EqGraph::mouseMagnify (const juce::MouseEvent& e, float scaleFactor)
 //==============================================================================
 //  IJEQEditor
 //==============================================================================
+// Coloca un componente en una zona (en píxeles aparentes) aplicando su escala propia
+static void placeScaled (juce::Component& c, juce::Rectangle<int> area, float s)
+{
+    if (std::abs (s - 1.f) < 0.001f)
+    {
+        c.setTransform ({});
+        c.setBounds (area);
+        return;
+    }
+    c.setBounds (area.getX(), area.getY(),
+                 juce::roundToInt ((float) area.getWidth() / s), juce::roundToInt ((float) area.getHeight() / s));
+    c.setTransform (juce::AffineTransform::scale (s, s, (float) area.getX(), (float) area.getY()));
+}
+
 IJEQEditor::IJEQEditor (IJEQProcessor& p)
     : AudioProcessorEditor (&p), proc (p),
-      graph (p, [this] (int b) { selectBand (b); })
+      graph (p, [this] (int b) { selectBand (b); }),
+      resizeR (*this, EdgeResizer::Kind::Right,  760, 420, 2600, 1800),
+      resizeB (*this, EdgeResizer::Kind::Bottom, 760, 420, 2600, 1800),
+      resizeC (*this, EdgeResizer::Kind::Corner, 760, 420, 2600, 1800)
 {
     const auto& st = AppSettings::get();
 
+    Cyber::applyTheme();
+    laf.refreshFont();
+    laf.refreshColours();
     setLookAndFeel (&laf);
     setWantsKeyboardFocus (true);
     proc.uiOpen.store (true);
 
-    // ---- estructura
-    addAndMakeVisible (graph);
-    addAndMakeVisible (topRegion);
-    addAndMakeVisible (bottomRegion);
-    addAndMakeVisible (leftRegion);
-    addAndMakeVisible (rightRegion);
+    lastAccent = st.accent;  lastHue = st.accentHue;  lastScanlines = st.scanlines;  lastLanguage = st.language;
+
+    // ---- estructura: todo dentro de "content", que se escala con la ventana
+    addAndMakeVisible (content);
+    content.onPaint = [this] (juce::Graphics& g)
+    {
+        g.setColour (Cyber::textDim);
+        g.setFont (Cyber::font (11.f, true));
+        g.drawText ("IJEQ", footer.withTrimmedLeft (34).withTrimmedRight (210), juce::Justification::centredLeft);
+    };
+
+    content.addAndMakeVisible (graph);
+    content.addAndMakeVisible (topRegion);
+    content.addAndMakeVisible (bottomRegion);
+    content.addAndMakeVisible (leftRegion);
+    content.addAndMakeVisible (rightRegion);
     leftRegion.addAndMakeVisible (meterIn);
     rightRegion.addAndMakeVisible (meterOut);
     bottomRegion.addAndMakeVisible (filtersPanel);
     bottomRegion.addAndMakeVisible (bandPanel);
 
-    // ---- estilo de botones
-    auto toggle = [] (CyberButton& b, juce::Colour neon)
-    {
-        b.setClickingTogglesState (true);
-        b.setNeon (neon);
-    };
+    // ---- botones
+    auto toggle = [] (CyberButton& b) { b.setClickingTogglesState (true); };
+    for (auto* b : { &bypassBtn, &polBtn, &analyzerBtn, &resBtn, &pauseBtn, &hpfOn, &lpfOn, &bandOn, &dynBtn })
+        toggle (*b);
 
-    toggle (bypassBtn, Cyber::orange);
-    toggle (polBtn, Cyber::magenta);
-    toggle (analyzerBtn, Cyber::cyan);
-    toggle (resBtn, Cyber::magenta);
-    toggle (pauseBtn, Cyber::yellow);
-    toggle (hpfOn, Cyber::green);
-    toggle (lpfOn, Cyber::green);
-    toggle (bandOn, Cyber::green);
-    toggle (dynBtn, Cyber::yellow);
-    infoBtn.setNeon (Cyber::yellow);
-    presetBtn.setNeon (Cyber::cyan);
-    saveBtn.setNeon (Cyber::green);
-    clearBtn.setNeon (Cyber::magenta);
-    centerBtn.setNeon (Cyber::cyan);
-    addBtn.setNeon (Cyber::cyan);
-    delBtn.setNeon (Cyber::magenta);
+    bypassBtn.setNeon (Cyber::orange);                       // aviso: no cambia con el tema
+    polBtn.setRole (CyberButton::Role::Secondary);
+    resBtn.setRole (CyberButton::Role::Secondary);
+    dynBtn.setRole (CyberButton::Role::Secondary);
+    clearBtn.setRole (CyberButton::Role::Secondary);
+    delBtn.setRole (CyberButton::Role::Secondary);
+
     hpfOn.setButtonText ("ON");
     lpfOn.setButtonText ("ON");
-
-    undoBtn.setNeon (Cyber::yellow);  undoBtn.setArrow (0.5f);
-    redoBtn.setNeon (Cyber::yellow);  redoBtn.setArrow (0.f);
-    settingsBtn.setNeon (Cyber::cyan);  settingsBtn.setGear();
+    undoBtn.setArrow (0.5f);
+    redoBtn.setArrow (0.f);
+    settingsBtn.setGear();
     analyzerBtn.setToggleState (true, juce::dontSendNotification);
 
     // ---- barra superior
@@ -1611,7 +1848,7 @@ IJEQEditor::IJEQEditor (IJEQProcessor& p)
     {
         s->setSliderStyle (juce::Slider::LinearHorizontal);
         s->setTextBoxStyle (juce::Slider::TextBoxRight, false, 78, 20);
-        s->setColour (juce::Slider::trackColourId, Cyber::accent());
+        s->getProperties().set ("primary", true);
     }
 
     rangeBox.onChange = [this] { graph.setRange (rangeBox.getSelectedId() * 6); };
@@ -1636,7 +1873,7 @@ IJEQEditor::IJEQEditor (IJEQProcessor& p)
     // ---- panel de filtros de corte
     for (auto* c : std::initializer_list<juce::Component*> { &lblHpf, &hpfOn, &hpfFreq, &hpfSlope, &lblLpf, &lpfOn, &lpfFreq, &lpfSlope })
         filtersPanel.addAndMakeVisible (*c);
-    knob (hpfFreq);  knob (lpfFreq);
+    knob (hpfFreq, true);  knob (lpfFreq, true);
     for (auto* c : { &hpfSlope, &lpfSlope })
         c->addItemList ({ "12 dB/oct", "24 dB/oct", "36 dB/oct", "48 dB/oct" }, 1);
 
@@ -1646,25 +1883,27 @@ IJEQEditor::IJEQEditor (IJEQProcessor& p)
                                                               &lblFreq, &lblGain, &lblQ, &lblRange, &lblThr, &lblAtk, &lblRel })
         bandPanel.addAndMakeVisible (*c);
     for (auto* s : { &bFreq, &bGain, &bQ, &dRange, &dThr, &dAtk, &dRel })
-        knob (*s);
+        knob (*s, false);
 
     addBtn.onClick = [this] { graph.addBand (1000.f, 0.f, EqMath::Bell, 1.f); };
     delBtn.onClick = [this] { graph.deleteSelected(); };
 
-    // ---- títulos y textos de los paneles
-    topRegion.paintOver = [] (juce::Graphics& g)
+    // ---- logotipo y textos de los paneles
+    topRegion.paintOver = [this] (juce::Graphics& g)
     {
-        const auto acc = Cyber::accent();
-        g.setFont (Cyber::font (32.f, true));
-        g.setColour (Cyber::magenta.withAlpha (0.35f));
-        g.drawText ("IJEQ", juce::Rectangle<int> (2, 1, 230, 38), juce::Justification::centredLeft);
-        g.setColour (acc);
-        g.drawText ("IJEQ", juce::Rectangle<int> (0, 0, 230, 38), juce::Justification::centredLeft);
+        // cristal oscuro detrás de la barra, para que se lea bien sobre el fondo decorado
+        auto glass = Cyber::chamfer (topRegion.getLocalBounds().toFloat().reduced (2.f), 10.f);
+        g.setColour (Cyber::bg.withAlpha (0.55f));
+        g.fillPath (glass);
+        g.setColour (Cyber::cyan.withAlpha (0.28f));
+        g.strokePath (glass, juce::PathStrokeType (1.f));
+
+        Cyber::drawLogo (g, juce::Rectangle<float> (8.f, 3.f, 226.f, 36.f));
         if (AppSettings::get().showSubtitle)
         {
             g.setColour (Cyber::textDim);
             g.setFont (Cyber::font (10.f, true));
-            g.drawText (tr ("PARAMETRIC EQUALIZER"), juce::Rectangle<int> (2, 36, 230, 14), juce::Justification::centredLeft);
+            g.drawText (tr ("PARAMETRIC EQUALIZER"), juce::Rectangle<int> (10, 38, 226, 12), juce::Justification::centredLeft);
         }
     };
 
@@ -1698,26 +1937,36 @@ IJEQEditor::IJEQEditor (IJEQProcessor& p)
         }
     };
 
-    // ---- asas para minimizar zonas
+    // ---- asas para minimizar zonas (no se tocan al cambiar el tamaño de las zonas)
     static const float openDir[4] = { 0.75f, 0.25f, 0.5f, 0.f };
     const bool startCollapsed[4] = { st.topCollapsed, st.bottomCollapsed, st.sidesCollapsed, st.sidesCollapsed };
     for (int i = 0; i < 4; ++i)
     {
         vis[i] = visTarget[i] = startCollapsed[i] ? 0.f : 1.f;
-        handle[i].setNeon (Cyber::cyan);
         handle[i].setArrow (startCollapsed[i] ? std::fmod (openDir[i] + 0.5f, 1.f) : openDir[i]);
         handle[i].onClick = [this, i] { togglePanel (i); };
-        addAndMakeVisible (handle[i]);
+        content.addAndMakeVisible (handle[i]);
     }
 
-    addAndMakeVisible (settingsBtn);
+    content.addAndMakeVisible (settingsBtn);
 
     // ---- enlace a Instagram
     link.setFont (juce::Font (Cyber::font (11.5f)), false, juce::Justification::centredRight);
     link.setColour (juce::HyperlinkButton::textColourId, Cyber::cyan.withAlpha (0.8f));
-    addAndMakeVisible (link);
+    content.addAndMakeVisible (link);
+
+    // ---- bordes para cambiar el tamaño de la ventana
+    addAndMakeVisible (resizeR);
+    addAndMakeVisible (resizeB);
+    addAndMakeVisible (resizeC);
 
     animTimer.fn = [this] { stepPanels(); };
+    bgTimer.fn = [this]
+    {
+        bgTimer.stopTimer();
+        rebuildBackground (bgScale > 0.f ? bgScale : 1.f);
+        repaint();
+    };
 
     filtersPanel.setPanelOpacity (st.panelOpacity);
     bandPanel.setPanelOpacity (st.panelOpacity);
@@ -1737,8 +1986,8 @@ IJEQEditor::IJEQEditor (IJEQProcessor& p)
     aLpfSlope = std::make_unique<CA> (a, "lpfSlope", lpfSlope);
 
     selectBand (-1);
-    setResizable (true, true);
-    setResizeLimits (1260, 460, 2600, 1800);
+    setResizable (true, false);                      // los bordes los gestionan EdgeResizer
+    setResizeLimits (760, 420, 2600, 1800);
     setSize (1260, 840);
     startTimerHz (30);
 }
@@ -1746,14 +1995,16 @@ IJEQEditor::IJEQEditor (IJEQProcessor& p)
 IJEQEditor::~IJEQEditor()
 {
     animTimer.stopTimer();
+    bgTimer.stopTimer();
     proc.uiOpen.store (false);
     setLookAndFeel (nullptr);
 }
 
-void IJEQEditor::knob (juce::Slider& s)
+void IJEQEditor::knob (juce::Slider& s, bool primary)
 {
     s.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
     s.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 92, 18);
+    s.getProperties().set ("primary", primary);
     s.setColour (juce::Slider::rotarySliderFillColourId, Cyber::cyan);
 }
 
@@ -1807,22 +2058,38 @@ void IJEQEditor::applyTexts()
     topRegion.repaint();
     bandPanel.repaint();
     filtersPanel.repaint();
-    repaint();
+    content.repaint();
 }
 
 void IJEQEditor::settingsChanged()
 {
     const auto& st = AppSettings::get();
-    applyTexts();
-    rebuildBackground();
+
+    const bool themeChanged = (st.accent != lastAccent) || (st.accentHue != lastHue) || (st.scanlines != lastScanlines);
+    const bool langChanged  = (st.language != lastLanguage);
+    lastAccent = st.accent;  lastHue = st.accentHue;  lastScanlines = st.scanlines;  lastLanguage = st.language;
+
+    if (themeChanged || langChanged)
+    {
+        Cyber::applyTheme();
+        laf.refreshFont();
+        laf.refreshColours();
+        applyTexts();
+        rebuildBackground (bgScale > 0.f ? bgScale : 1.f);
+        filtersPanel.refreshTheme();
+        bandPanel.refreshTheme();
+        link.setColour (juce::HyperlinkButton::textColourId, Cyber::cyan.withAlpha (0.8f));
+        if (info) info->refresh();
+        if (settingsPanel) settingsPanel->refreshAll();
+        meterIn.repaint();
+        meterOut.repaint();
+        content.repaint();
+    }
+
     filtersPanel.setPanelOpacity (st.panelOpacity);
     bandPanel.setPanelOpacity (st.panelOpacity);
-    for (auto* s : { &inSl, &outSl })
-        s->setColour (juce::Slider::trackColourId, Cyber::accent());
     graph.settingsChanged();
-    meterIn.repaint();
-    meterOut.repaint();
-    if (info) info->refresh();
+    layoutMain();
     repaint();
 }
 
@@ -1832,9 +2099,9 @@ void IJEQEditor::showInfo()
     {
         info = std::make_unique<InfoOverlay>();
         info->onClose = [this] { info->setVisible (false); };
-        addChildComponent (*info);
+        content.addChildComponent (*info);
     }
-    info->setBounds (getLocalBounds().reduced (60, 40));
+    placeOverlays();
     info->refresh();
     info->setVisible (true);
     info->toFront (true);
@@ -1847,11 +2114,20 @@ void IJEQEditor::showSettings()
         settingsPanel = std::make_unique<SettingsOverlay>();
         settingsPanel->onClose = [this] { settingsPanel->setVisible (false); };
         settingsPanel->onChanged = [this] { settingsChanged(); };
-        addChildComponent (*settingsPanel);
+        content.addChildComponent (*settingsPanel);
     }
-    settingsPanel->setBounds (getLocalBounds().reduced (60, 40));
+    placeOverlays();
     settingsPanel->setVisible (true);
     settingsPanel->toFront (true);
+}
+
+void IJEQEditor::placeOverlays()
+{
+    const auto b = content.getLocalBounds();
+    if (info)
+        info->setBounds (b.reduced (60, 40));
+    if (settingsPanel)
+        settingsPanel->setBounds (b.withSizeKeepingCentre (juce::jmin (660, b.getWidth() - 20), juce::jmin (470, b.getHeight() - 20)));
 }
 
 void IJEQEditor::selectBand (int b)
@@ -1960,23 +2236,37 @@ void IJEQEditor::stepPanels()
 
 void IJEQEditor::layoutMain()
 {
-    auto r = getLocalBounds().reduced (12, 10);
+    const auto& st = AppSettings::get();
+    const float sT = st.topScale, sB = st.bottomScale, sS = st.sideScale;
+
+    auto r = content.getLocalBounds().reduced (12, 10);
     footer = r.removeFromBottom (20);
     settingsBtn.setBounds (footer.getX(), footer.getY(), 24, 20);
     link.setBounds (footer.removeFromRight (200));
 
-    const int topH   = (int) std::lround (vis[0] * topFull);
-    const int botH   = (int) std::lround (vis[1] * botFull);
-    const int leftW  = (int) std::lround (vis[2] * meterFull);
-    const int rightW = (int) std::lround (vis[3] * meterFull);
+    int topH = (int) std::lround (vis[0] * topFull * sT);
+    int botH = (int) std::lround (vis[1] * botFull * sB);
 
-    topRegion.setBounds (r.removeFromTop (topH));
+    // la pantalla central siempre conserva un mínimo de alto
+    int over = topH + botH + 16 + 140 - r.getHeight();
+    if (over > 0)
+    {
+        const int cut = juce::jmin (botH, over);
+        botH -= cut;
+        over -= cut;
+        if (over > 0) topH = juce::jmax (0, topH - over);
+    }
+
+    const int leftW  = (int) std::lround (vis[2] * meterFull * sS);
+    const int rightW = (int) std::lround (vis[3] * meterFull * sS);
+
+    placeScaled (topRegion, r.removeFromTop (topH), sT);
     r.removeFromTop ((int) std::lround (vis[0] * 6.f));
-    bottomRegion.setBounds (r.removeFromBottom (botH));
+    placeScaled (bottomRegion, r.removeFromBottom (botH), sB);
     r.removeFromBottom ((int) std::lround (vis[1] * 10.f));
-    leftRegion.setBounds (r.removeFromLeft (leftW));
+    placeScaled (leftRegion, r.removeFromLeft (leftW), sS);
     r.removeFromLeft ((int) std::lround (vis[2] * 8.f));
-    rightRegion.setBounds (r.removeFromRight (rightW));
+    placeScaled (rightRegion, r.removeFromRight (rightW), sS);
     r.removeFromRight ((int) std::lround (vis[3] * 8.f));
     graph.setBounds (r);
 
@@ -2003,7 +2293,7 @@ void IJEQEditor::layoutTop()
     const int W = topRegion.getWidth();
 
     auto r1 = juce::Rectangle<int> (0, 0, W, 50);
-    r1.removeFromLeft (236);
+    r1.removeFromLeft (240);
     analyzerBtn.setBounds (r1.removeFromLeft (112).reduced (0, 10));  r1.removeFromLeft (6);
     resBtn.setBounds      (r1.removeFromLeft (124).reduced (0, 10));  r1.removeFromLeft (6);
     rangeBox.setBounds    (r1.removeFromLeft (118).reduced (0, 10));  r1.removeFromLeft (6);
@@ -2021,12 +2311,14 @@ void IJEQEditor::layoutTop()
     placeGain (lblIn,  inSl,  r1.removeFromRight (190));
 
     auto r2 = juce::Rectangle<int> (0, 56, W, 36);
+    r2.removeFromLeft (8);
     undoBtn.setBounds (r2.removeFromLeft (36).reduced (0, 2));  r2.removeFromLeft (6);
     redoBtn.setBounds (r2.removeFromLeft (36).reduced (0, 2));  r2.removeFromLeft (14);
     presetBtn.setBounds (r2.removeFromLeft (290).reduced (0, 2));  r2.removeFromLeft (6);
     saveBtn.setBounds   (r2.removeFromLeft (100).reduced (0, 2));  r2.removeFromLeft (14);
     clearBtn.setBounds  (r2.removeFromLeft (130).reduced (0, 2));
 
+    r2.removeFromRight (8);
     pauseBtn.setBounds  (r2.removeFromRight (90).reduced (0, 2));   r2.removeFromRight (6);
     centerBtn.setBounds (r2.removeFromRight (150).reduced (0, 2));
 }
@@ -2086,39 +2378,56 @@ void IJEQEditor::layoutBottom()
     }
 }
 
-void IJEQEditor::rebuildBackground()
+// Fondo decorativo a la resolución real de la pantalla (se rehace al terminar de cambiar el tamaño)
+void IJEQEditor::rebuildBackground (float ps)
 {
-    const int w = juce::jmax (1, getWidth()), h = juce::jmax (1, getHeight());
-    bgCache = juce::Image (juce::Image::RGB, w, h, false);
+    bgScale = ps;
+    const int lw = juce::jmax (1, getWidth()), lh = juce::jmax (1, getHeight());
+    const int pw = juce::jmax (1, (int) std::ceil ((float) lw * ps)), ph = juce::jmax (1, (int) std::ceil ((float) lh * ps));
+
+    bgCache = juce::Image (juce::Image::RGB, pw, ph, false);
     juce::Graphics g (bgCache);
-    g.setGradientFill (juce::ColourGradient (juce::Colour (0xff0e0919), 0.f, 0.f, juce::Colour (0xff04020a), 0.f, (float) h, false));
-    g.fillAll();
+    g.addTransform (juce::AffineTransform::scale ((float) pw / (float) lw, (float) ph / (float) lh));
+    Cyber::drawBackdrop (g, lw, lh);
+
     if (AppSettings::get().scanlines)
     {
-        g.setColour (juce::Colours::black.withAlpha (0.20f));
-        for (int y = 0; y < h; y += 3)
-            g.drawHorizontalLine (y, 0.f, (float) w);
+        g.setColour (juce::Colours::black.withAlpha (0.18f));
+        for (int y = 0; y < lh; y += 3)
+            g.drawHorizontalLine (y, 0.f, (float) lw);
     }
 }
 
 void IJEQEditor::resized()
 {
-    rebuildBackground();
-    if (info) info->setBounds (getLocalBounds().reduced (60, 40));
-    if (settingsPanel) settingsPanel->setBounds (getLocalBounds().reduced (60, 40));
+    const float s = juce::jlimit (0.55f, 2.2f, (float) getWidth() / baseWidth);
+    content.setTransform (juce::AffineTransform::scale (s));
+    content.setBounds (0, 0, juce::roundToInt ((float) getWidth() / s), juce::roundToInt ((float) getHeight() / s));
+
+    const int w = getWidth(), h = getHeight(), t = 6, c = 16;
+    resizeR.setBounds (w - t, 0, t, juce::jmax (0, h - c));
+    resizeB.setBounds (0, h - t, juce::jmax (0, w - c), t);
+    resizeC.setBounds (w - c, h - c, c, c);
+    resizeR.toFront (false);
+    resizeB.toFront (false);
+    resizeC.toFront (false);
+
+    if (! bgCache.isValid())
+        rebuildBackground (bgScale > 0.f ? bgScale : 1.f);
+    else
+        bgTimer.startTimer (140);
+
+    placeOverlays();
     layoutMain();
 }
 
 void IJEQEditor::paint (juce::Graphics& g)
 {
-    if (bgCache.isValid())
-        g.drawImageAt (bgCache, 0, 0);
-    else
-        g.fillAll (Cyber::bg);
+    const float ps = Cyber::pixelScale (g);
+    if (! bgCache.isValid() || std::abs (ps - bgScale) > 0.01f)
+        rebuildBackground (ps);
 
-    g.setColour (Cyber::textDim);
-    g.setFont (Cyber::font (11.f, true));
-    g.drawText ("IJEQ", footer.withTrimmedLeft (34).withTrimmedRight (210), juce::Justification::centredLeft);
+    g.drawImage (bgCache, 0, 0, getWidth(), getHeight(), 0, 0, bgCache.getWidth(), bgCache.getHeight());
 }
 
 //==============================================================================

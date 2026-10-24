@@ -123,6 +123,9 @@ namespace Loc
             { "Show band numbers",   { "Mostrar números de las bandas", "显示频段编号" } },
             { "Fill selected band",  { "Rellenar la banda seleccionada", "填充所选频段" } },
             { "Invert swipe direction (Q)", { "Invertir sentido del deslizamiento (Q)", "反转滑动方向 (Q)" } },
+            { "Size",            { "Tamaño", "大小" } },
+            { "Custom colour",   { "Color personalizado", "自定义颜色" } },
+            { "Settings opacity",{ "Opacidad de los ajustes", "设置面板不透明度" } },
             { "ON",              { "ON", "开" } },
             { "OFF",             { "OFF", "关" } },
 
@@ -262,6 +265,12 @@ CUT FILTERS
 • HPF cuts the lows below the chosen frequency. LPF cuts the highs above it.
 • The slope (12, 24, 36 or 48 dB/oct) is how steep the cut is.
 
+WINDOW SIZE
+• Drag the right edge, the bottom edge or the bottom-right corner of the plugin to make it smaller or larger.
+  Everything scales with the window.
+• In SETTINGS you can also change the size of the top bar, the side meters and the bottom panel.
+  The small minimize arrows always stay in place.
+
 SETTINGS (small gear, bottom left)
 • Language (English, Español, 中文), accent colour, animations, and options for each area:
   top bar, sides, bottom panel and the central screen (band size and opacity, curve thickness,
@@ -341,6 +350,12 @@ FILTROS DE CORTE
 • HPF corta los graves por debajo de la frecuencia elegida. LPF corta los agudos por encima.
 • La pendiente (12, 24, 36 o 48 dB/oct) indica lo brusco que es el corte.
 
+TAMAÑO DE LA VENTANA
+• Arrastra el borde derecho, el borde inferior o la esquina inferior derecha del plugin para hacerlo más pequeño
+  o más grande. Todo se escala con la ventana.
+• En AJUSTES también puedes cambiar el tamaño de la barra superior, de los vúmetros laterales y del panel inferior.
+  Las pequeñas flechas de minimizar siempre se quedan en su sitio.
+
 AJUSTES (pequeño engranaje, abajo a la izquierda)
 • Idioma (English, Español, 中文), color de acento, animaciones y opciones de cada zona: barra superior,
   laterales, panel inferior y pantalla central (tamaño y opacidad de las bandas, grosor de la curva,
@@ -417,6 +432,10 @@ IJEQ · 快速指南
 截止滤波器
 • 高通（HPF）切除所选频率以下的低频。低通（LPF）切除所选频率以上的高频。
 • 斜率（12、24、36 或 48 dB/oct）表示切除的陡峭程度。
+
+窗口大小
+• 拖动插件的右边缘、下边缘或右下角，即可缩小或放大。所有内容会随窗口一起缩放。
+• 在“设置”中还可以分别调整顶部栏、两侧电平表和底部面板的大小。收起用的小箭头始终保留。
 
 设置（左下角的小齿轮）
 • 语言（English、Español、中文）、强调色、动画，以及各区域的选项：顶部栏、两侧、底部面板和

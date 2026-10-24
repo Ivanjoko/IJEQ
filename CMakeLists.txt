@@ -3,7 +3,7 @@ set(CMAKE_OSX_ARCHITECTURES "arm64;x86_64" CACHE STRING "Binario universal: Appl
 set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "macOS minimo")
 
 cmake_minimum_required(VERSION 3.22)
-project(IJEQ VERSION 6.0.0)
+project(IJEQ VERSION 7.0.0)
 
 include(FetchContent)
 FetchContent_Declare(JUCE

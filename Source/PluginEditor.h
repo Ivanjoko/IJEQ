@@ -40,24 +40,31 @@ private:
 
 //==============================================================================
 //  Ajustes: General · Barra superior · Laterales · Inferior · Centro
+//  Todos los controles se crean una sola vez; al cambiar de pestaña solo se muestran u ocultan.
 //==============================================================================
+class SettingRow;
+
 class SettingsOverlay : public juce::Component
 {
 public:
     SettingsOverlay();
-    void refreshTexts();
+    ~SettingsOverlay() override;
     void paint (juce::Graphics&) override;
     void resized() override;
+    void refreshAll();                       // vuelve a escribir textos y valores
     std::function<void()> onClose, onChanged;
 
 private:
-    void buildTab (int t);
+    template <typename T, typename... Args> T* addRow (Args&&... args);
+    void showTab (int t);
+    void layoutRows();
     void changed();
 
     int tab = 0;
     CyberButton tabBtn[5], closeBtn, resetBtn;
-    juce::OwnedArray<juce::Label> labels;
-    juce::OwnedArray<juce::Component> controls;
+    juce::Viewport viewport;
+    juce::Component page;
+    std::vector<std::unique_ptr<SettingRow>> rows;
 };
 
 //==============================================================================
@@ -117,7 +124,7 @@ private:
     bool updateSpectrum();
     void rebuildSpectrum();
     void rebuildCurve();
-    void ensureGrid();
+    void ensureGrid (float ps);
     void findResonances();
     double responseDbAt (double f) const;
     float levelAt (float f) const;
@@ -164,6 +171,7 @@ private:
     // gráficos en caché
     juce::Image gridImg;
     View gridView { 0, 0, 0, 0 };
+    float gridScale = 0.f;
     juce::Path curvePath, selFill, specFill, specLine;
 
     // última respuesta calculada (para la lectura bajo el cursor)
@@ -203,9 +211,10 @@ private:
     void layoutMain();
     void layoutTop();
     void layoutBottom();
+    void placeOverlays();
     void stepPanels();
     void togglePanel (int which);
-    void rebuildBackground();
+    void rebuildBackground (float ps);
     void applyTexts();
     void settingsChanged();
     void showInfo();
@@ -213,7 +222,7 @@ private:
 
     void selectBand (int b);
     void updateEnabled();
-    void knob (juce::Slider&);
+    void knob (juce::Slider&, bool primary);
     void label (juce::Label&, const char* key);
     void runProgrammatic (std::function<void()> change);
     void setPresetName (const juce::String&);
@@ -226,9 +235,11 @@ private:
     using CA = juce::AudioProcessorValueTreeState::ComboBoxAttachment;
 
     static constexpr int topFull = 96, botFull = 270, meterFull = 84;
+    static constexpr float baseWidth = 1260.f;
 
     CyberLookAndFeel laf;
     IJEQProcessor& proc;
+    Canvas content;                                  // todo el contenido; se escala con la ventana
     EqGraph graph;
     StereoMeter meterIn { "IN" }, meterOut { "OUT" };
     std::unique_ptr<InfoOverlay> info;               // se crean al usarlos: la ventana abre más rápido
@@ -251,12 +262,17 @@ private:
     std::unique_ptr<CA> aHpfSlope, aLpfSlope, aBType;
 
     float vis[4] { 1.f, 1.f, 1.f, 1.f }, visTarget[4] { 1.f, 1.f, 1.f, 1.f };
-    FnTimer animTimer;
+    FnTimer animTimer, bgTimer;
+    EdgeResizer resizeR, resizeB, resizeC;
 
     int selected = -1;
     float inR[2] {}, inP[2] {}, outR[2] {}, outP[2] {};
     juce::Rectangle<int> capFilter, capDyn, footer;
     juce::Image bgCache;
+    float bgScale = 0.f;
+    int lastAccent = -1, lastLanguage = -1;
+    float lastHue = -1.f;
+    bool lastScanlines = true;
     juce::String currentPreset, digitBuf;
     juce::uint32 digitTime = 0;
     std::unique_ptr<juce::FileChooser> fileChooser;
